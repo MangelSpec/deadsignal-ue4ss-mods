@@ -1,0 +1,17 @@
+# This git repo lives inside the game's UE4SS `Mods/` folder, which also holds the
+# stock UE4SS mods and shared libraries. Track ONLY our own mods; ignore the rest.
+
+# Ignore everything by default...
+/*
+
+# ...then re-include repo files and each of our own mods.
+!/.gitignore
+!/README.md
+!/ShadowToggle/
+!/FlashlightAlways/
+# Add a line like the ones above for every new mod folder, e.g.:
+# !/DoorCodeMemory/
+
+# Per-mod runtime output / scratch captures (not source).
+ShadowToggle/positions.txt
+

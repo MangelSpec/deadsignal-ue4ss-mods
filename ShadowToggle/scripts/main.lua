@@ -6,16 +6,21 @@
 --                  rooms, and reading the security-camera feeds.
 --   Shadows ON  -> the Noir "is a killer here" tell renders.
 --
--- The game only exposes MainPlayerState.LastPlayersLocation, which lags one zone
--- behind the player, so the current room is derived from the player's world
--- position with a point-in-polygon test against SHADOW_ON_POLYGON.
+-- Both inputs come from the game's own state, delivered as parameters of two
+-- NoirSubsystem events. Neither is stored in a readable property, so the values
+-- are captured from the events and cached here:
 --
--- Iterate WITHOUT restarting: edit this file, then press Ctrl+R in-game.
+--   PlayerLocationChanged(EPlayerLocation NewLocation) -> which room
+--   PlayerPawnChanged(EPlayerPawns NewPawn)            -> walking vs desk/etc
+--
+-- (MainPlayerState.LastPlayersLocation is a Blueprint mirror of the first event,
+-- which is why it lags a room behind. It is not used.)
+--
+-- Hot reload is OFF: fully restart the game to load changes to this file.
 -- Console (F10 / Caret):
---   shadow on | off | <0-5>   force a value (auto overrides it on the next tick)
+--   shadow on | off | <0-5>   force a value (auto overrides it on the next event)
 --   shadow auto on | off      pause/resume automatic switching
---   shadowstate               print position / decision to the log
---   shadowpos [label]         append the player's world position to positions.txt
+--   shadowstate               print room / pawn / decision to the log
 -- F8 toggles auto on/off.
 
 -------------------------------------------------------------------------------
@@ -26,40 +31,72 @@
 -- Set this to the level you want rendered inside the apartment.
 local ON_SHADOW_QUALITY = 3
 
--- Polygon of world (X, Y) corners enclosing the open-plan area where shadows
--- should be ON, captured in order with `shadowpos`. To retune the boundary,
--- re-capture corners and replace this list, then Ctrl+R. Consecutive vertices
--- form the edges; the last vertex links back to the first automatically.
-local SHADOW_ON_POLYGON = {
-    { -2569, -1891 },
-    { -2261, -1966 },
-    { -2112, -1855 },
-    { -2180, -1176 },
-    { -2392, -1039 },
-    { -2953, -1039 },
-    { -3034, -1494 },
-    { -2985, -1543 },
-    { -2649, -1582 },
+-- EPlayerLocation (/Script/DeadSignal).
+local LOCATION = {
+    NOT_SET           = 0,
+    APT_COMPUTER_AREA = 1,
+    APT_LIVING_ROOM   = 2,
+    APT_KITCHEN       = 3,
+    APT_BATHROOM      = 4,
+    APT_BEDROOM       = 5,
+    APT_MAIN_HALLWAY  = 6,
+    APT_ELEVATOR      = 7,
+    APT_ROOF_TOP      = 8,
+    FLOOR_10          = 9,
+    FLOOR_8           = 10,
+    FLOOR_7           = 11,
+    FLOOR_6           = 12,
+    FLOOR_5           = 13,
+    FLOOR_4           = 14,
+    FLOOR_3           = 15,
+    FLOOR_2           = 16,
+    FLOOR_9           = 17,
 }
 
--- Height band around the apartment floor (captured at world Z ~= 2764). Guards
--- against a building floor stacked above/below that overlaps the polygon in X,Y.
-local ON_Z_MIN = 2514
-local ON_Z_MAX = 3014
+-- EPlayerPawns (/Script/DeadSignal). MAIN is the walking first-person pawn;
+-- every other value means the player is driving something else (desk, computer,
+-- elevator panel, hiding spot, ...).
+local PAWN = {
+    NOT_SET        = 0,
+    MAIN           = 1,
+    DESK           = 2,
+    COMPUTER       = 3,
+    KEY_PAD        = 4,
+    ELEVATOR       = 5,
+    SAT            = 6,
+    HIDE           = 7,
+    ELEVATOR_PANEL = 8,
+    DOOR_BRACE     = 9,
+}
 
--- When true, sitting at the desk/computer forces shadows OFF (clearer camera
--- feed) even while inside the ON polygon. Set false to let position decide alone.
+local LOCATION_NAME = {}
+for name, value in pairs(LOCATION) do LOCATION_NAME[value] = name end
+
+local PAWN_NAME = {}
+for name, value in pairs(PAWN) do PAWN_NAME[value] = name end
+
+-- Rooms where shadows are ON: the apartment's open-plan area. To retune, add or
+-- remove entries; every room absent from this table renders without shadows.
+local SHADOW_ON_LOCATIONS = {
+    [LOCATION.APT_COMPUTER_AREA] = true,
+    [LOCATION.APT_LIVING_ROOM]   = true,
+    [LOCATION.APT_KITCHEN]       = true,
+}
+
+-- When true, driving anything other than the walking pawn (the desk and computer
+-- both sit inside APT_COMPUTER_AREA) forces shadows OFF for a clearer camera
+-- feed. Set false to let the room decide alone.
 local OFF_AT_DESK = true
 
-local WALK_PAWN_CLASS = "BP_StandardPawn_C" -- view target class while walking (first-person).
-local POLL_MS = 250
+local LOCATION_CHANGED_FN = "/Script/DeadSignal.NoirSubsystem:PlayerLocationChanged"
+local PAWN_CHANGED_FN     = "/Script/DeadSignal.NoirSubsystem:PlayerPawnChanged"
 
 -------------------------------------------------------------------------------
 -- UObject helpers
 -------------------------------------------------------------------------------
 
 -- The local PlayerController: the one backed by a valid ULocalPlayer. Used as
--- the world context for ExecuteConsoleCommand and to read view target / pawn.
+-- the world context for ExecuteConsoleCommand.
 local function getPlayerController()
     local pcs = FindAllOf("PlayerController")
     if not pcs then return nil end
@@ -76,23 +113,6 @@ end
 -- exec path; robust where the controller's own ConsoleCommand nullptr-ed.
 local function getKismetSystemLibrary()
     return StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-end
-
-local function classNameOf(obj)
-    if not (obj and obj:IsValid()) then return nil end
-    local cls = obj:GetClass()
-    if not (cls and cls:IsValid()) then return nil end
-    return cls:GetFName():ToString()
-end
-
--- The player pawn's world location, or nil while there is no walking pawn
--- (e.g. sitting at the desk). Returns x, y, z.
-local function getPlayerXYZ(pc)
-    local pawn = pc.Pawn
-    if not (pawn and pawn:IsValid()) then return nil end
-    local ok, loc = pcall(function() return pawn:K2_GetActorLocation() end)
-    if not ok or not loc then return nil end
-    return loc.X, loc.Y, loc.Z
 end
 
 -------------------------------------------------------------------------------
@@ -117,65 +137,52 @@ local function setShadowQuality(value)
 end
 
 -------------------------------------------------------------------------------
+-- State
+-------------------------------------------------------------------------------
+
+local currentLocation = nil -- EPlayerLocation; nil until the first event
+local currentPawn = nil     -- EPlayerPawns; nil until the first event
+local autoEnabled = true
+local currentOn = nil       -- last applied state; nil forces the next apply
+
+-- An unknown pawn is treated as walking, so the room alone decides until the
+-- first PlayerPawnChanged arrives. An unknown room yields OFF, the safe default.
+local function shouldShadowsBeOn()
+    if OFF_AT_DESK and currentPawn ~= nil and currentPawn ~= PAWN.MAIN then
+        return false
+    end
+    return SHADOW_ON_LOCATIONS[currentLocation] == true
+end
+
+-- Must run on the game thread.
+local function apply()
+    if not autoEnabled then return end
+    local desired = shouldShadowsBeOn()
+    if desired == currentOn then return end
+    currentOn = desired
+    setShadowQuality(desired and ON_SHADOW_QUALITY or 0)
+end
+
+-------------------------------------------------------------------------------
 -- Detect
 -------------------------------------------------------------------------------
 
--- Ray-casting point-in-polygon test on the X,Y plane.
-local function pointInPolygon(x, y, poly)
-    local inside = false
-    local n = #poly
-    local j = n
-    for i = 1, n do
-        local xi, yi = poly[i][1], poly[i][2]
-        local xj, yj = poly[j][1], poly[j][2]
-        if ((yi > y) ~= (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi) then
-            inside = not inside
-        end
-        j = i
-    end
-    return inside
-end
-
--- True when the player stands inside the ON polygon at apartment-floor height.
-local function isInOnZone(pc)
-    local x, y, z = getPlayerXYZ(pc)
-    if not x then return false end
-    if z < ON_Z_MIN or z > ON_Z_MAX then return false end
-    return pointInPolygon(x, y, SHADOW_ON_POLYGON)
-end
-
--- At the desk when the view target is anything other than the walking pawn
--- (BP_DeskPawn_C when sitting, BP_SpyCameraLocation_C on the active camera).
-local function isAtPC(pc)
-    return classNameOf(pc:GetViewTarget()) ~= WALK_PAWN_CLASS
-end
-
-local function shouldShadowsBeOn(pc)
-    if OFF_AT_DESK and isAtPC(pc) then return false end
-    return isInOnZone(pc)
-end
-
--------------------------------------------------------------------------------
--- Auto loop
--------------------------------------------------------------------------------
-
-local autoEnabled = true
-local currentOn = nil -- last applied state; nil forces the first apply
-
-LoopAsync(POLL_MS, function()
-    if autoEnabled then
-        ExecuteInGameThread(function()
-            local pc = getPlayerController()
-            if not pc then return end
-            local desired = shouldShadowsBeOn(pc)
-            if desired ~= currentOn then
-                currentOn = desired
-                setShadowQuality(desired and ON_SHADOW_QUALITY or 0)
-            end
+-- Hook callbacks run on the game thread inside ProcessEvent, so apply() is
+-- called directly rather than queued.
+local function hookEvent(fnPath, store)
+    local ok, err = pcall(function()
+        RegisterHook(fnPath, function(self, param)
+            store(param:get())
+            apply()
         end)
+    end)
+    if not ok then
+        print("[ShadowToggle] failed to hook " .. fnPath .. ": " .. tostring(err) .. "\n")
     end
-    return false -- keep looping
-end)
+end
+
+hookEvent(LOCATION_CHANGED_FN, function(value) currentLocation = value end)
+hookEvent(PAWN_CHANGED_FN, function(value) currentPawn = value end)
 
 -------------------------------------------------------------------------------
 -- Console + keybind
@@ -183,8 +190,9 @@ end)
 
 local function setAuto(on)
     autoEnabled = on
-    currentOn = nil -- re-apply on the next tick when re-enabling
+    currentOn = nil -- re-apply on the next evaluation when re-enabling
     print("[ShadowToggle] auto " .. (on and "on" or "off") .. "\n")
+    ExecuteInGameThread(apply)
 end
 
 RegisterConsoleCommandHandler("shadow", function(FullCommand, Parameters, Ar)
@@ -203,49 +211,18 @@ RegisterConsoleCommandHandler("shadow", function(FullCommand, Parameters, Ar)
     return true
 end)
 
--- Prints the player's position and the current decision (for verifying / tuning).
+-- Prints the cached room and pawn and the resulting decision (for verifying).
 RegisterConsoleCommandHandler("shadowstate", function(FullCommand, Parameters, Ar)
-    ExecuteInGameThread(function()
-        local pc = getPlayerController()
-        if not pc then
-            print("[ShadowToggle] no PlayerController\n")
-            return
-        end
-        local x, y, z = getPlayerXYZ(pc)
-        print(string.format("[ShadowToggle] pos=(%s, %s, %s) inZone=%s atPC=%s wantOn=%s\n",
-            x and string.format("%.0f", x) or "?",
-            y and string.format("%.0f", y) or "?",
-            z and string.format("%.0f", z) or "?",
-            tostring(isInOnZone(pc)), tostring(isAtPC(pc)), tostring(shouldShadowsBeOn(pc))))
-    end)
-    return true
-end)
-
--- Appends the player's world position to positions.txt, for capturing / editing
--- the SHADOW_ON_POLYGON corners in-game.
-RegisterConsoleCommandHandler("shadowpos", function(FullCommand, Parameters, Ar)
-    ExecuteInGameThread(function()
-        local pc = getPlayerController()
-        local x, y, z
-        if pc then x, y, z = getPlayerXYZ(pc) end
-        if not x then
-            print("[ShadowToggle] no pawn (are you walking?)\n")
-            return
-        end
-        local label = Parameters[1] or "?"
-        local line = string.format("%-14s X=%.0f Y=%.0f Z=%.0f", label, x, y, z)
-        print("[ShadowToggle] " .. line .. "\n")
-        local f = io.open("Mods/ShadowToggle/positions.txt", "a+")
-        if f then
-            f:write(line .. "\n"); f:close()
-        end
-    end)
+    print(string.format("[ShadowToggle] location=%s (%s) pawn=%s (%s) wantOn=%s\n",
+        LOCATION_NAME[currentLocation] or "?", tostring(currentLocation),
+        PAWN_NAME[currentPawn] or "?", tostring(currentPawn),
+        tostring(shouldShadowsBeOn())))
     return true
 end)
 
 -- F8 toggles auto on/off. Guarded so a hot reload won't double-bind.
 if not IsKeyBindRegistered(Key.F8) then
     RegisterKeyBind(Key.F8, function()
-        ExecuteInGameThread(function() setAuto(not autoEnabled) end)
+        setAuto(not autoEnabled)
     end)
 end

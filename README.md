@@ -12,6 +12,9 @@ horror). No anticheat, so these script mods are safe to use.
   menu to change shadow quality every time.
 - **FlashlightAlways** is a flashlight-from-start fix. It skips the mandatory
   flashlight pickup so your flashlight works from the first second of a new game.
+- **DoorCodeMemory** remembers the apartment door code and shows it in the corner
+  while you are away from the computer, so you do not have to walk back to the desk
+  (or a real notepad) to check it.
 
 Each folder in this repo is one mod. Copy the ones you want into your game and
 enable them.
@@ -147,6 +150,35 @@ commands; it uses the game's own flashlight controls.
 - `FLASHLIGHT_ITEM_ID` — the inventory id the game uses for the flashlight (`62`).
   Only change this if a game update renumbers items and the flashlight stops working.
 
+### DoorCodeMemory (door code reminder / always-visible keypad code)
+
+Remembers the apartment door code and shows it on screen while you are away from the
+computer, so you never have to walk back to the desk to re-read it.
+
+**Why:** the door code lives on the desktop computer and rerolls on a timer. When
+you head to the door you either memorize it or trek back to check. This keeps it in
+front of you.
+
+**What it does:** it captures the code the moment the desktop displays it, then draws
+`DOORCODE: <code>` in the top-left corner. The overlay is **hidden while you are at
+the desk/computer** (the desktop already shows the code there) and appears once you
+walk away. Until you have seen the code at least once it shows `DOORCODE: ?????`.
+
+**Controls**
+
+| Input | Effect |
+| --- | --- |
+| (automatic) | The code shows in the corner while you are away from the PC. |
+| `doorcode` | Print the remembered code and current state to the log. |
+
+**Configuration** (top of `DoorCodeMemory/scripts/main.lua`):
+
+- `NOOB_MODE` — `false` (default) only reveals a code you could actually have seen at
+  the PC. Set `true` to always show the current code, even a reroll you were not there
+  to see.
+- `HUD_COLOR` / `HUD_FONT_SIZE` — overlay colour and text size.
+- `HUD_LINES_DOWN` / `HUD_LEFT_PAD` — top and left margin of the overlay.
+
 ---
 
 ## Development
@@ -156,12 +188,3 @@ commands; it uses the game's own flashlight controls.
   that, edit a mod's `main.lua` and press **Ctrl+R** in-game to reload. No restart.
 - **Feedback channel:** `Binaries/Win64/UE4SS.log`. Every Lua `print(...)` shows up
   there prefixed with `[Lua]`, along with load messages and errors.
-
-## Roadmap
-
-Planned mods (not built yet):
-
-- **Door-code memory** — always display the last door code seen while at the
-  computer or cameras, so you do not have to write it on a real notepad. It only
-  updates while you are at the desk/cameras, so leaving the computer keeps the last
-  known code and preserves the intended difficulty.

@@ -9,8 +9,7 @@
 !/README.md
 !/ShadowToggle/
 !/FlashlightAlways/
-# Add a line like the ones above for every new mod folder, e.g.:
-# !/DoorCodeMemory/
+!/DoorCodeMemory/
 
 # Per-mod runtime output / scratch captures (not source).
 ShadowToggle/positions.txt

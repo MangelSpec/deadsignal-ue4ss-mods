@@ -97,42 +97,34 @@ the security cameras, but hide the "Noir" shadow tell. Medium or higher renders 
 Noir "is a killer here" tell in the apartment, but darkens rooms and worsens the
 camera feeds. No single setting is right everywhere.
 
-**What it does:** Shadows turn **ON** only while you are inside the apartment's
-open-plan living area (computer / living room / kitchen), and **OFF** everywhere
-else. Sitting at the desk also forces them OFF for a clearer camera feed. The switch
-is automatic and based on your real position, so it happens right at the doorways.
+**What it does:** Shadows turn **ON** only while the game reports that you are in the
+apartment's open-plan living area (computer / living room / kitchen), and **OFF**
+everywhere else. Sitting at the desk also forces them OFF for a clearer camera feed.
+The switch follows the game's room and active-pawn events.
 
 **Controls**
 
 | Input | Effect |
 | --- | --- |
-| (automatic) | Shadows follow your position; nothing to press. |
+| (automatic) | Shadows follow the current room and active pawn; nothing to press. |
 | `F8` | Toggle the automatic switching on/off. |
-| `shadow on` / `shadow off` / `shadow <0-5>` | Force a shadow value (auto overrides it on the next tick). |
+| `shadow on` / `shadow off` / `shadow <0-5>` | Force a shadow value (auto overrides it on the next room/pawn event). |
 | `shadow auto on` / `shadow auto off` | Pause or resume automatic switching. |
-| `shadowstate` | Print your position and the current decision to the log. |
-| `shadowpos [label]` | Save your current world position to `positions.txt` (used for retuning, see below). |
+| `shadowstate` | Print the cached room, active pawn, and current decision to the log. |
 
 **Configuration** (top of `ShadowToggle/scripts/main.lua`):
 
 - `ON_SHADOW_QUALITY` — shadow quality applied when ON (`1`-`5`, higher is sharper).
-- `SHADOW_ON_POLYGON` — the world (X, Y) corners of the ON area.
-- `ON_Z_MIN` / `ON_Z_MAX` — height band, so a building floor stacked above/below the
-  apartment cannot be mistaken for it.
+- `SHADOW_ON_LOCATIONS` — the game room values where shadows stay ON.
 - `OFF_AT_DESK` — set `false` if you want shadows ON at the desk when inside the area.
 
 **Note:** ShadowToggle sets `r.ShadowQuality` directly, which takes console priority.
 While the mod is active, the in-game menu's Shadow Quality slider will not visibly do
 anything. That is expected, not a bug.
 
-**Retuning the ON area** (if you want different rooms, or the boundary feels off):
-
-1. Walk the perimeter of the area you want, standing a bit inside each corner.
-2. At each corner run `shadowpos` in the console. Every point is appended to
-   `ShadowToggle/positions.txt`.
-3. Copy those `X`/`Y` values into `SHADOW_ON_POLYGON` (in order, one `{ X, Y }` per
-   corner).
-4. Press **Ctrl+R** in-game to hot-reload, then test with `shadowstate`.
+**Retuning the ON rooms:** add or remove `LOCATION` entries in
+`SHADOW_ON_LOCATIONS`, press **Ctrl+R** in-game, then cross a room boundary and test
+with `shadowstate`.
 
 ### FlashlightAlways (flashlight from start / skip flashlight pickup)
 
@@ -159,10 +151,11 @@ computer, so you never have to walk back to the desk to re-read it.
 you head to the door you either memorize it or trek back to check. This keeps it in
 front of you.
 
-**What it does:** it captures the code the moment the desktop displays it, then draws
-`DOORCODE: <code>` in the top-left corner. The overlay is **hidden while you are at
-the desk/computer** (the desktop already shows the code there) and appears once you
-walk away. Until you have seen the code at least once it shows `DOORCODE: ?????`.
+**What it does:** it privately captures the code when the desktop receives it. By
+default, `DOORCODE: <code>` appears in the top-left only after you have entered that
+code correctly at the apartment keypad. A reroll hides the old code until the new one
+has also been entered correctly. The overlay stays hidden in menus, before the first
+reveal, and while you are at the PC.
 
 **Controls**
 
@@ -173,9 +166,10 @@ walk away. Until you have seen the code at least once it shows `DOORCODE: ?????`
 
 **Configuration** (top of `DoorCodeMemory/scripts/main.lua`):
 
-- `NOOB_MODE` — `false` (default) only reveals a code you could actually have seen at
-  the PC. Set `true` to always show the current code, even a reroll you were not there
-  to see.
+- `REVEAL_AFTER_CORRECT_ENTRY` — `true` (default) reveals each code only after it has
+  been entered correctly at the apartment keypad. Set `false` for the easier behavior
+  that reveals the initial code and later rerolls after visiting the PC.
+- `NOOB_MODE` — set `true` to override the rule above and show every code immediately.
 - `HUD_COLOR` / `HUD_FONT_SIZE` — overlay colour and text size.
 - `HUD_LINES_DOWN` / `HUD_LEFT_PAD` — top and left margin of the overlay.
 

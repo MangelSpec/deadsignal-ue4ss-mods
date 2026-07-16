@@ -16,7 +16,7 @@
 -- (MainPlayerState.LastPlayersLocation is a Blueprint mirror of the first event,
 -- which is why it lags a room behind. It is not used.)
 --
--- Hot reload is OFF: fully restart the game to load changes to this file.
+-- Hot reload is ON: press Ctrl+R in-game after changing this file.
 -- Console (F10 / Caret):
 --   shadow on | off | <0-5>   force a value (auto overrides it on the next event)
 --   shadow auto on | off      pause/resume automatic switching
@@ -90,6 +90,8 @@ local OFF_AT_DESK = true
 
 local LOCATION_CHANGED_FN = "/Script/DeadSignal.NoirSubsystem:PlayerLocationChanged"
 local PAWN_CHANGED_FN     = "/Script/DeadSignal.NoirSubsystem:PlayerPawnChanged"
+local RETRY_MS = 1000
+local MAX_HOOK_ATTEMPTS = 30
 
 -------------------------------------------------------------------------------
 -- UObject helpers
@@ -159,8 +161,9 @@ local function apply()
     if not autoEnabled then return end
     local desired = shouldShadowsBeOn()
     if desired == currentOn then return end
-    currentOn = desired
-    setShadowQuality(desired and ON_SHADOW_QUALITY or 0)
+    if setShadowQuality(desired and ON_SHADOW_QUALITY or 0) then
+        currentOn = desired
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -169,20 +172,35 @@ end
 
 -- Hook callbacks run on the game thread inside ProcessEvent, so apply() is
 -- called directly rather than queued.
-local function hookEvent(fnPath, store)
-    local ok, err = pcall(function()
+local function hookEvent(name, fnPath, store)
+    local attempts = 0
+    local function register()
         RegisterHook(fnPath, function(self, param)
             store(param:get())
             apply()
         end)
-    end)
-    if not ok then
-        print("[ShadowToggle] failed to hook " .. fnPath .. ": " .. tostring(err) .. "\n")
     end
+    local function tryRegister()
+        attempts = attempts + 1
+        if pcall(register) then
+            print("[ShadowToggle] hooked " .. name .. " (attempt " .. attempts .. ")\n")
+            return true
+        end
+        if attempts >= MAX_HOOK_ATTEMPTS then
+            print("[ShadowToggle] could not hook " .. name .. " after " .. attempts
+                .. " attempts; retrying unguarded to surface the error\n")
+            register()
+            return true
+        end
+        return false
+    end
+    if not tryRegister() then LoopAsync(RETRY_MS, tryRegister) end
 end
 
-hookEvent(LOCATION_CHANGED_FN, function(value) currentLocation = value end)
-hookEvent(PAWN_CHANGED_FN, function(value) currentPawn = value end)
+hookEvent("PlayerLocationChanged", LOCATION_CHANGED_FN,
+    function(value) currentLocation = value end)
+hookEvent("PlayerPawnChanged", PAWN_CHANGED_FN,
+    function(value) currentPawn = value end)
 
 -------------------------------------------------------------------------------
 -- Console + keybind
@@ -200,13 +218,25 @@ RegisterConsoleCommandHandler("shadow", function(FullCommand, Parameters, Ar)
     if arg == "auto" then
         setAuto(Parameters[2] ~= "off")
     elseif arg == "on" then
-        ExecuteInGameThread(function() setShadowQuality(ON_SHADOW_QUALITY) end)
+        ExecuteInGameThread(function()
+            setShadowQuality(ON_SHADOW_QUALITY)
+            currentOn = nil
+        end)
     elseif arg == "off" then
-        ExecuteInGameThread(function() setShadowQuality(0) end)
-    elseif arg and tonumber(arg) then
-        ExecuteInGameThread(function() setShadowQuality(tonumber(arg)) end)
+        ExecuteInGameThread(function()
+            setShadowQuality(0)
+            currentOn = nil
+        end)
     else
-        Ar:Log("usage: shadow on | off | <0-5> | auto on|off")
+        local value = tonumber(arg)
+        if value and value >= 0 and value <= 5 and value % 1 == 0 then
+            ExecuteInGameThread(function()
+                setShadowQuality(value)
+                currentOn = nil
+            end)
+        else
+            Ar:Log("usage: shadow on | off | <0-5> | auto on|off")
+        end
     end
     return true
 end)
@@ -220,9 +250,14 @@ RegisterConsoleCommandHandler("shadowstate", function(FullCommand, Parameters, A
     return true
 end)
 
--- F8 toggles auto on/off. Guarded so a hot reload won't double-bind.
+-- Keep one keybind across hot reloads, but replace its dispatcher so it always
+-- controls the current script state rather than the closure from the first load.
+_G.ShadowToggleF8 = function()
+    setAuto(not autoEnabled)
+end
 if not IsKeyBindRegistered(Key.F8) then
     RegisterKeyBind(Key.F8, function()
-        setAuto(not autoEnabled)
+        local handler = _G.ShadowToggleF8
+        if handler then handler() end
     end)
 end

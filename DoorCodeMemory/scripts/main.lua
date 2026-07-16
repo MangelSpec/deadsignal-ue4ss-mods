@@ -13,10 +13,9 @@
 -- Two layers:
 --   latestCode    - private cache, updated on every UpdateKeyPadCode fire, even
 --                   for a reroll issued while the player is away from the desk.
---   rememberedCode - what the player is allowed to see. In real mode it only
---                   becomes latestCode once the player is at the PC (the desk
---                   chair or actively using the computer), i.e. a code they could
---                   legitimately have read. In noob mode it always tracks latest.
+--   rememberedCode - what the player is allowed to see. By default it becomes
+--                   latestCode only after that code has been entered correctly at
+--                   the apartment keypad. In noob mode it always tracks latest.
 --
 -- "At the PC" reuses ShadowToggle's signal: NoirSubsystem:PlayerPawnChanged
 -- delivers EPlayerPawns; DESK and COMPUTER are the desk chair and the computer.
@@ -24,16 +23,20 @@
 -- Display: the game HUD (AMainGameHUD) never routes through ReceiveDrawHUD, so
 -- immediate-mode Canvas drawing does nothing. Instead a UMG widget (a bare
 -- TextBlock as the widget-tree root) is built at runtime and added to the
--- viewport at top-left; it shows "?????" until the code is revealed and is hidden
--- while at the PC. A watchdog re-adds/rebuilds it after level or round changes.
+-- viewport at top-left. It stays hidden until a code is revealed and while at the
+-- PC. A watchdog re-adds/rebuilds it after level or round changes.
 -- Console `doorcode` prints the same to the log.
 
 -------------------------------------------------------------------------------
 -- Config
 -------------------------------------------------------------------------------
 
--- Real mode (default) only reveals a code the player could have seen at the PC.
--- Noob mode reveals every code the moment it is issued, seen or not.
+-- When true (default), real mode reveals a code only after the player has entered
+-- that code correctly at the apartment keypad. Set false for the easier behavior:
+-- reveal the initial code, then reveal later rerolls after visiting the PC.
+local REVEAL_AFTER_CORRECT_ENTRY = true
+
+-- Noob mode overrides the rule above and reveals every code immediately.
 local NOOB_MODE = false
 
 -- EPlayerPawns (/Script/DeadSignal). MAIN is the walking first-person pawn.
@@ -53,8 +56,7 @@ local PAWN = {
 local PAWN_NAME = {}
 for name, value in pairs(PAWN) do PAWN_NAME[value] = name end
 
--- Pawns that count as "at the PC", where the code on screen is readable and so
--- may be revealed. Add or remove entries to retune.
+-- Pawns that count as "at the PC" for easier mode and overlay visibility.
 local REVEAL_PAWNS = {
     [PAWN.DESK]     = true, -- sitting in the desk chair
     [PAWN.COMPUTER] = true, -- actively using the computer
@@ -74,6 +76,7 @@ local OVERLAY_NAME   = "DoorCodeOverlay"
 
 local UPDATE_CODE_FN  = "/Script/DeadSignal.MainDesktopWidget:UpdateKeyPadCode"
 local PAWN_CHANGED_FN = "/Script/DeadSignal.NoirSubsystem:PlayerPawnChanged"
+local CORRECT_CODE_FN = "/Script/DeadSignal.LucasSubsystem:PlayerEnteredCorrectCode"
 local RETRY_MS = 1000
 local MAX_ATTEMPTS = 30
 local WATCHDOG_MS = 1000 -- how often to ensure the overlay exists and is on-screen
@@ -85,6 +88,7 @@ local WATCHDOG_MS = 1000 -- how often to ensure the overlay exists and is on-scr
 local latestCode = nil     -- private: the true current code, revealed or not
 local rememberedCode = nil -- what the player may see
 local currentPawn = nil    -- EPlayerPawns; nil until the first PlayerPawnChanged
+local revealNextCode = false -- correct-entry event arrived before the code capture
 
 local function log(msg)
     print("[DoorCodeMemory] " .. msg .. "\n")
@@ -100,11 +104,17 @@ end
 
 local overlay = { widget = nil, text = nil }
 
--- Hidden at the PC (DESK/COMPUTER), where the desktop already shows the code;
--- visible everywhere else. SelfHitTestInvisible(4) draws without eating input.
+local function overlayIsValid()
+    return overlay.widget and overlay.widget:IsValid()
+        and overlay.text and overlay.text:IsValid()
+end
+
+-- Hidden until a code is revealed and while at the PC. SelfHitTestInvisible(4)
+-- draws without eating input.
 local function applyOverlayVisibility()
     if not (overlay.widget and overlay.widget:IsValid()) then return end
-    overlay.widget:SetVisibility(atPC() and 1 or 4) -- Collapsed / SelfHitTestInvisible
+    local show = rememberedCode ~= nil and not atPC()
+    overlay.widget:SetVisibility(show and 4 or 1) -- SelfHitTestInvisible / Collapsed
 end
 
 -- UE4SS exposes a global FText constructor; some builds lack it, so fall back to
@@ -116,8 +126,9 @@ local function toFText(str)
 end
 
 local function displayText()
+    if not rememberedCode then return "" end
     return string.rep("\n", HUD_LINES_DOWN) .. string.rep(" ", HUD_LEFT_PAD)
-        .. HUD_TEXT .. (rememberedCode or "?????")
+        .. HUD_TEXT .. rememberedCode
 end
 
 -- A TextBlock built from scratch usually has no usable FontObject, so its glyphs
@@ -153,7 +164,7 @@ end
 -- Idempotent: returns true immediately if already built. Must run on the game
 -- thread. Returns false (to be retried) until the classes and GameInstance exist.
 local function buildOverlay()
-    if overlay.widget and overlay.widget:IsValid() then return true end
+    if overlayIsValid() then return true end
 
     local C_UserWidget = StaticFindObject("/Script/UMG.UserWidget")
     local C_WidgetTree = StaticFindObject("/Script/UMG.WidgetTree")
@@ -169,8 +180,10 @@ local function buildOverlay()
     local widget = StaticConstructObject(C_UserWidget, outer, FName(OVERLAY_NAME))
     if not widget or not widget:IsValid() then return false end
     local tree = StaticConstructObject(C_WidgetTree, widget, FName(OVERLAY_NAME .. "_Tree"))
+    if not tree or not tree:IsValid() then return false end
     widget.WidgetTree = tree
     local text = StaticConstructObject(C_TextBlock, tree, FName(OVERLAY_NAME .. "_Text"))
+    if not text or not text:IsValid() then return false end
     -- TextBlock as the direct root. This build fails to marshal struct-by-value
     -- arguments (SetFont/SetColorAndOpacity both failed as calls but worked as
     -- property writes), so a CanvasPanelSlot's SetAnchors/SetPosition/SetAlignment
@@ -194,8 +207,6 @@ local function buildOverlay()
     end)
     if not okFont then log("font member write failed") end
 
-    -- Colour: a from-scratch TextBlock can default to black, invisible on the
-    -- dark game. Try the setter, then a direct property assign as a fallback.
     -- Colour: a from-scratch TextBlock defaults to transparent, so it is present
     -- but never paints. Struct marshalling is unreliable here, so set it two ways
     -- (whole-property assign, then per-field writes); the build log reads the
@@ -232,15 +243,16 @@ end
 -- call from any thread (hook callbacks are on the game thread; LoopAsync is not).
 local function refreshOverlay()
     ExecuteInGameThread(function()
-        if not (overlay.widget and overlay.widget:IsValid()) then
+        if not overlayIsValid() then
+            overlay.widget, overlay.text = nil, nil
             if not buildOverlay() then return end
         end
         overlay.text:SetText(toFText(displayText()))
+        applyOverlayVisibility()
     end)
 end
 
--- Promote the private code to the remembered code and update the overlay. Called
--- when a new code is captured at the PC, and when the player arrives at the PC.
+-- Promote the private code to the remembered code and update the overlay.
 local function reveal()
     if latestCode and latestCode ~= rememberedCode then
         rememberedCode = latestCode
@@ -263,11 +275,25 @@ local function onUpdateKeyPadCode(_, NewCode)
         log("UpdateKeyPadCode fired but its code param was unreadable")
         return
     end
+    local changed = latestCode ~= code
     latestCode = code
-    if NOOB_MODE or atPC() then
+    if NOOB_MODE then
+        reveal()
+    elseif REVEAL_AFTER_CORRECT_ENTRY then
+        if changed and rememberedCode ~= nil then
+            rememberedCode = nil
+            refreshOverlay()
+        end
+        if revealNextCode then
+            revealNextCode = false
+            reveal()
+        else
+            log("cached code privately (waiting for correct keypad entry)")
+        end
+    elseif atPC() or rememberedCode == nil then
         reveal()
     else
-        log("cached code " .. code .. " privately (not at the PC yet)")
+        log("cached code privately (not at the PC yet)")
     end
 end
 
@@ -275,8 +301,28 @@ local function onPawnChanged(_, NewPawn)
     local ok, value = pcall(function() return NewPawn:get() end)
     if not ok then return end
     currentPawn = value
-    if atPC() then reveal() end
+    if atPC() and not REVEAL_AFTER_CORRECT_ENTRY then reveal() end
     applyOverlayVisibility()
+end
+
+local function onCorrectCodeEntered()
+    if NOOB_MODE then return end
+    if latestCode then
+        reveal()
+    else
+        revealNextCode = true
+        log("correct code entered before code capture; next capture will reveal")
+    end
+end
+
+-- On game over, forget all code and reveal state. Hooked on GameEnd only because
+-- GameStart/GameResume also fire during normal play.
+local function onGameEnd(_)
+    latestCode, rememberedCode, currentPawn = nil, nil, nil
+    revealNextCode = false
+    refreshOverlay()
+    applyOverlayVisibility()
+    log("game over - code forgotten")
 end
 
 -- The hooked UFunctions may not exist at mod load (the desktop widget class loads
@@ -303,13 +349,18 @@ end
 
 installHook("UpdateKeyPadCode", UPDATE_CODE_FN, onUpdateKeyPadCode)
 installHook("PlayerPawnChanged", PAWN_CHANGED_FN, onPawnChanged)
+installHook("PlayerEnteredCorrectCode", CORRECT_CODE_FN, onCorrectCodeEntered)
+
+-- Forget the code on game over.
+installHook("GameEnd(Threat)",    "/Script/DeadSignal.ThreatSubsystem:GameEnd",    onGameEnd)
+installHook("GameEnd(Desk)",      "/Script/DeadSignal.DeskPawn:GameEnd",           onGameEnd)
 
 -- Keep the overlay alive for the whole session: build it once the game world
 -- exists, rebuild it if the widget is destroyed, and re-add it to the viewport
 -- when a level/round change removes it - all without a hot reload and without
 -- touching the captured code. buildOverlay is idempotent so this cannot stack.
 local function ensureOverlay()
-    if overlay.widget and overlay.widget:IsValid() then
+    if overlayIsValid() then
         if not overlay.widget:IsInViewport() then
             pcall(function() overlay.widget:RemoveFromParent() end)
             overlay.widget:AddToViewport(HUD_ZORDER)
@@ -334,10 +385,13 @@ RegisterConsoleCommandHandler("doorcode", function(_, _, _)
     if rememberedCode then
         log("remembered code: " .. rememberedCode)
     else
-        log("no code remembered yet - be at the PC once to reveal it")
+        log(REVEAL_AFTER_CORRECT_ENTRY
+            and "no code remembered yet - enter it correctly at the keypad to reveal it"
+            or "no code remembered yet - visit the PC to reveal it")
     end
+    local latestState = latestCode and "captured" or "nil"
     log(string.format("latest(private)=%s pawn=%s atPC=%s",
-        tostring(latestCode), PAWN_NAME[currentPawn] or "?", tostring(atPC())))
+        latestState, PAWN_NAME[currentPawn] or "?", tostring(atPC())))
     return true
 end)
 
@@ -369,4 +423,7 @@ RegisterConsoleCommandHandler("doordump", function(_, _, _)
 end)
 
 log("loaded in " .. (NOOB_MODE and "NOOB mode (reveals every code immediately)"
-    or "REAL mode (reveals only at the PC)") .. " - overlay on screen, 'doorcode' to log")
+    or (REVEAL_AFTER_CORRECT_ENTRY
+        and "STRICT mode (reveals codes after correct keypad entry)"
+        or "REAL mode (reveals the initial code, then rerolls seen at the PC)"))
+    .. " - overlay on screen, 'doorcode' to log")

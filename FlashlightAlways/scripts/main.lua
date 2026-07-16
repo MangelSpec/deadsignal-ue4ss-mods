@@ -18,6 +18,8 @@ local FLASHLIGHT_ITEM_ID = 62
 -------------------------------------------------------------------------------
 
 local INVENTORY_CHECK = "/Script/DeadSignal.MainPlayerState:InventoryItemCheck"
+local RETRY_MS = 1000
+local MAX_HOOK_ATTEMPTS = 30
 
 -- True when this InventoryItemCheck call is asking about the flashlight.
 local function isFlashlightQuery(...)
@@ -28,22 +30,31 @@ local function isFlashlightQuery(...)
 end
 
 -- Install the override. The native function must exist in memory to hook it, so
--- retry until it does (returning true from LoopAsync stops the loop).
+-- retry for a bounded period and surface the real error if it never appears.
 local installed = false
+local attempts = 0
+local function registerHook()
+    RegisterHook(INVENTORY_CHECK,
+        function(Context, ...) if isFlashlightQuery(...) then return true end end,
+        function(Context, ...) if isFlashlightQuery(...) then return true end end)
+end
+
 local function tryInstall()
     if installed then return true end
-    local ok = pcall(function()
-        RegisterHook(INVENTORY_CHECK,
-            function(Context, ...) if isFlashlightQuery(...) then return true end end,
-            function(Context, ...) if isFlashlightQuery(...) then return true end end)
-    end)
+    attempts = attempts + 1
+    local ok = pcall(registerHook)
     if ok then
         installed = true
         print("[FlashlightAlways] flashlight unlocked (item " .. FLASHLIGHT_ITEM_ID .. ")\n")
+    elseif attempts >= MAX_HOOK_ATTEMPTS then
+        print("[FlashlightAlways] could not hook InventoryItemCheck after " .. attempts
+            .. " attempts; retrying unguarded to surface the error\n")
+        registerHook()
+        installed = true
     end
     return installed
 end
 
 if not tryInstall() then
-    LoopAsync(1000, tryInstall)
+    LoopAsync(RETRY_MS, tryInstall)
 end

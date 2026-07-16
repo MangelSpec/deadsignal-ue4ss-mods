@@ -2,19 +2,19 @@
 
 Free, open-source [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) Lua mods, tweaks,
 and fixes for the game **Dead Signal** (Steam, Unreal Engine 5.2, single-player
-horror). No anticheat, so these script mods are safe to use.
+horror).
 
 **Included mods:**
 
-- **ShadowToggle** is an automatic shadow-quality toggle for Dead Signal. It
-  auto-switches shadows on and off as you move, so the "Noir" shadow (the fast
-  "is a killer here" tell) appears when you need it without opening the settings
-  menu to change shadow quality every time.
+- **ShadowToggle** is an automatic shadow fix for Dead Signal. It switches shadow
+  quality by room, keeping the "Noir" shadow tell visible where it matters without
+  making you change the setting manually every time you move.
 - **FlashlightAlways** is a flashlight-from-start fix. It skips the mandatory
   flashlight pickup so your flashlight works from the first second of a new game.
-- **DoorCodeMemory** remembers the apartment door code and shows it in the corner
-  while you are away from the computer, so you do not have to walk back to the desk
-  (or a real notepad) to check it.
+- **DoorCodeMemory** is a simple quality-of-life memory helper. By default, it only
+  remembers and displays a door code after you enter it correctly, proving you
+  already know it. It gives no advance information; it just replaces writing the
+  code on a real notepad or walking back to the computer to check it again.
 
 Each folder in this repo is one mod. Copy the ones you want into your game and
 enable them.
@@ -86,7 +86,7 @@ bundled ConsoleEnablerMod, so it works as soon as UE4SS is installed.
 
 ## Mods
 
-### ShadowToggle (automatic shadow quality toggle / auto shadow fix)
+### ShadowToggle (automatic shadow fix / shadow quality toggle)
 
 Automates Dead Signal's shadow-quality tradeoff so you stop switching it by hand in
 the settings menu. Shadows toggle on and off automatically based on where you are.
@@ -142,14 +142,16 @@ commands; it uses the game's own flashlight controls.
 - `FLASHLIGHT_ITEM_ID` — the inventory id the game uses for the flashlight (`62`).
   Only change this if a game update renumbers items and the flashlight stops working.
 
-### DoorCodeMemory (door code reminder / always-visible keypad code)
+### DoorCodeMemory (door code memory helper / QoL reminder)
 
-Remembers the apartment door code and shows it on screen while you are away from the
-computer, so you never have to walk back to the desk to re-read it.
+Remembers the apartment door code after you enter it correctly, then shows it on
+screen while you are away from the computer. The default behavior is a clear
+quality-of-life helper, not an advantage: you must prove you know each code before
+the mod will display it.
 
 **Why:** the door code lives on the desktop computer and rerolls on a timer. When
-you head to the door you either memorize it or trek back to check. This keeps it in
-front of you.
+you need the same code again, your choices are to remember it, write it down, or trek
+back to check. This mod acts as an in-game notepad after a correct entry.
 
 **What it does:** it privately captures the code when the desktop receives it. By
 default, `DOORCODE: <code>` appears in the top-left only after you have entered that
@@ -167,9 +169,10 @@ reveal, and while you are at the PC.
 **Configuration** (top of `DoorCodeMemory/scripts/main.lua`):
 
 - `REVEAL_AFTER_CORRECT_ENTRY` — `true` (default) reveals each code only after it has
-  been entered correctly at the apartment keypad. Set `false` for the easier behavior
-  that reveals the initial code and later rerolls after visiting the PC.
-- `NOOB_MODE` — set `true` to override the rule above and show every code immediately.
+  been entered correctly at the apartment keypad. Set `false` to reveal the initial
+  code and later rerolls after visiting the PC.
+- `NOOB_MODE` — set `true` for the optional assist mode that shows every code
+  immediately, without requiring a correct entry.
 - `HUD_COLOR` / `HUD_FONT_SIZE` — overlay colour and text size.
 - `HUD_LINES_DOWN` / `HUD_LEFT_PAD` — top and left margin of the overlay.
 
